@@ -91,7 +91,7 @@
                        FontFamily="Courier New" />
             </Border>
 
-            <Label Text="💡 Tip: Look for the floating 📡 button to inspect captured requests!"
+            <Label Text="💡 Tip: Open the inspector from the notification list or the button above."
                    FontSize="12"
                    TextColor="Gray"
                    FontAttributes="Italic"

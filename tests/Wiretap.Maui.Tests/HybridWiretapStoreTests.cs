@@ -299,6 +299,18 @@ public class HybridWiretapStoreTests : IAsyncLifetime
         Assert.Equal(0, await _database.CountAsync());
     }
 
+    [Fact]
+    public async Task ClearAsync_DoesNotReinsertQueuedRecords()
+    {
+        for (var index = 0; index < 50; index++)
+            _store.Add(CreateTestRecord(url: $"https://example.com/{index}"));
+
+        await _store.ClearAsync();
+        await _store.FlushAsync();
+
+        Assert.Equal(0, await _database.CountAsync());
+    }
+
     #endregion
 
     #region Event Tests

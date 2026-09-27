@@ -314,6 +314,33 @@ public class WiretapHandlerTests
     }
 
     [Fact]
+    public async Task Handler_DoesNotConsumeNonSeekableRequestBody()
+    {
+        var store = CreateStore();
+        var payload = new string('X', 500);
+        string? downstreamBody = null;
+        var handler = new WiretapHandler(store, CreateOptions(maxBodySize: 100))
+        {
+            InnerHandler = new MockInnerHandler(async request =>
+            {
+                downstreamBody = await request.Content!.ReadAsStringAsync();
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            })
+        };
+        using var client = new HttpClient(handler);
+        using var content = new StreamContent(new NonSeekableReadStream(Encoding.UTF8.GetBytes(payload)));
+        content.Headers.ContentLength = payload.Length;
+
+        await client.PostAsync("https://api.example.com/upload", content);
+
+        Assert.Equal(payload, downstreamBody);
+        var record = Assert.Single(store.GetRecords());
+        Assert.Null(record.RequestBody);
+        Assert.Equal(payload.Length, record.RequestSize);
+        Assert.True(record.RequestBodyTruncated);
+    }
+
+    [Fact]
     public async Task Handler_CapturesResponseHeaders()
     {
         // Arrange
@@ -450,5 +477,26 @@ public class WiretapHandlerTests
         var record = store.GetRecords()[0];
         Assert.Equal((int)statusCode, record.StatusCode);
         Assert.True(record.IsComplete);
+    }
+
+    private sealed class NonSeekableReadStream(byte[] data) : Stream
+    {
+        private readonly MemoryStream _inner = new(data);
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            _inner.ReadAsync(buffer, cancellationToken);
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

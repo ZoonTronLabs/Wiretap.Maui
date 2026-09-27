@@ -67,6 +67,7 @@ public class WiretapOptions
     /// <summary>
     /// Whether to enable SQLite persistence for HTTP records.
     /// When enabled, records are written to SQLite in the background.
+    /// Requires the host to initialize a SQLitePCLRaw provider before Wiretap starts.
     /// Default: true
     /// </summary>
     public bool EnablePersistence { get; set; } = true;

@@ -9,7 +9,7 @@ internal static class WiretapServiceLocator
     {
         var services = Application.Current?.Handler?.MauiContext?.Services;
 #if ANDROID
-        services ??= MauiApplication.Current?.Services;
+        services ??= IPlatformApplication.Current?.Services;
 #endif
         return services;
     }

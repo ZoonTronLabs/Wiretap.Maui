@@ -70,6 +70,19 @@ public class WiretapDatabase : IAsyncDisposable
             if (_initialized)
                 return;
 
+            // The package supplies no native SQLite implementation. The host owns its provider.
+            try
+            {
+                _ = SQLitePCL.raw.sqlite3_libversion();
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or NullReferenceException)
+            {
+                throw new InvalidOperationException(
+                    "Wiretap SQLite persistence requires a host SQLitePCLRaw provider. " +
+                    "Install a SQLitePCLRaw bundle and call SQLitePCL.Batteries_V2.Init() " +
+                    "before using Wiretap, or set EnablePersistence = false.", ex);
+            }
+
             // Create table if it doesn't exist
             await _connection.CreateTableAsync<HttpRecordEntity>();
 

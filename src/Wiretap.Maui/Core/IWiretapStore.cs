@@ -48,6 +48,11 @@ public interface IWiretapStore
     HttpRecord? GetRecord(Guid id);
 
     /// <summary>
+    /// Gets a record without blocking the caller while a persistent store reads it.
+    /// </summary>
+    Task<HttpRecord?> GetRecordAsync(Guid id) => Task.FromResult(GetRecord(id));
+
+    /// <summary>
     /// Adds a new HTTP record to the store.
     /// </summary>
     /// <param name="record">The record to add.</param>

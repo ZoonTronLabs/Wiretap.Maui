@@ -16,7 +16,7 @@ In-app HTTP traffic inspector for .NET MAUI - debug network requests like [Chuck
 ## Features
 
 - 📡 **Intercept HTTP traffic** - Captures all requests/responses from your HttpClient
-- 🎯 **Zero-config setup** - Just two lines of code to integrate
+- 🎯 **Simple setup** - Add the handler and choose in-memory or host-provided SQLite storage
 - 📋 **Request list** - View all captured requests with method, status, duration, size
 - 🔍 **Detail view** - Full request/response headers and bodies with tabs
 - 🔎 **Search & Filter** - Filter by method (GET, POST, etc.), status code (2xx, 4xx, 5xx), or search text
@@ -26,10 +26,10 @@ In-app HTTP traffic inspector for .NET MAUI - debug network requests like [Chuck
 - 📄 **Export to PDF** - Generate professional PDF reports
 - 📋 **Copy to clipboard** - Copy headers or body with one tap
 - 💾 **SQLite persistence** - Optional persistent storage across app restarts
-- 🔔 **Notifications** - Android/iOS notifications for quick access to inspector
+- 🔔 **Quiet entry point** - Persistent Android notification or passive iOS notification-list item
 - 🌙 **Dark mode support** - Adapts to system theme
 - ⚡ **Debug-only** - Easily exclude from release builds with `#if DEBUG`
-- 🔄 **Ring buffer storage** - Configurable limit, no memory bloat
+- 🔄 **Bounded storage** - Configurable memory limit and bounded background write queue
 
 ## Installation
 
@@ -55,7 +55,7 @@ public static MauiApp CreateMauiApp()
     builder
         .UseMauiApp<App>()
 #if DEBUG
-        .UseWiretap()  // Add this line!
+        .UseWiretap(options => options.EnablePersistence = false)
 #endif
         ;
 
@@ -76,7 +76,27 @@ builder.Services.AddHttpClient("MyApi", client =>
 ;
 ```
 
-That's it!
+That's it for in-memory capture. To keep records across launches, see the SQLite setup below.
+
+### SQLite persistence (optional)
+
+Wiretap 2.0 no longer bundles a native SQLite library. The host app chooses one provider and initializes it **before** Wiretap opens its database. For example:
+
+```xml
+<PackageReference Include="SQLite3MC.PCLRaw.bundle" Version="2.4.0" />
+```
+
+```csharp
+public static MauiApp CreateMauiApp()
+{
+    SQLitePCL.Batteries_V2.Init();
+    var builder = MauiApp.CreateBuilder();
+    builder.UseMauiApp<App>().UseWiretap(); // persistence is enabled by default
+    return builder.Build();
+}
+```
+
+If the host already initializes a SQLitePCLRaw provider, Wiretap uses that same provider. It does not call `Batteries_V2.Init()` or bring a second native SQLite implementation. Without a provider, set `EnablePersistence = false`; otherwise initialization reports the missing setup.
 
 ## ⚠️ Important Notes
 
@@ -114,12 +134,13 @@ Customize Wiretap behavior with options:
 .UseWiretap(options =>
 {
     options.MaxStoredRequests = 500;        // Max requests to keep (default: 500)
-    options.ShowFloatingButton = true;      // Show floating button (default: true)
+    options.ShowFloatingButton = true;      // Show notification entry point (default: true)
     options.PrettyPrintJson = true;         // Format JSON bodies (default: true)
     options.MaskSensitiveHeaders = true;    // Mask auth headers (default: true)
     options.CaptureRequestHeaders = true;   // Capture request headers (default: true)
     options.CaptureResponseHeaders = true;  // Capture response headers (default: true)
-    options.MaxBodySize = 1_048_576;        // Max body size in bytes (default: 1MB)
+    options.MaxBodySizeBytes = 1_048_576;   // Max captured body bytes (default: 1MB)
+    options.EnablePersistence = false;      // In-memory mode without SQLite provider
 
     // Custom sensitive header patterns
     options.SensitiveHeaderPatterns = new[]
@@ -129,23 +150,21 @@ Customize Wiretap behavior with options:
 })
 ```
 
-## Show/Hide Overlay Programmatically
+## Show/Hide the Notification Entry Point
 
-> ⚠️ **Note:** The floating overlay may cause issues with touch handling and navigation on some pages. We recommend using manual navigation instead (see below).
+Android keeps one low-importance ongoing notification that opens the inspector. iOS keeps a passive item in the notification list: Wiretap shows no foreground banner or sound and never changes the app icon badge. Updates are coalesced. The host app remains responsible for notification permissions.
 
 ```csharp
 // In your App.xaml.cs or anywhere with access to Application
 
 #if DEBUG
-// Show the overlay
-this.ShowWiretapOverlay();
+this.ShowWiretapEntryPoint();
 
-// Hide the overlay
-this.HideWiretapOverlay();
+this.HideWiretapEntryPoint();
 #endif
 
 // Or using IServiceProvider
-serviceProvider.ShowWiretapOverlay();
+serviceProvider.ShowWiretapEntryPoint();
 ```
 
 ## Navigate to Inspector Directly (Recommended)
@@ -215,9 +234,9 @@ Your App → WiretapHandler → AuthHandler → Network
 ```
 
 **Key points:**
-- Request/response bodies are **read without replacement**, so your API calls work normally
+- Seekable request/response bodies are read up to `MaxBodySizeBytes`, then rewound so callers receive the original content. Non-seekable bodies are left untouched and omitted from the preview.
 - Records are stored in memory with a configurable limit (oldest removed when full)
-- The floating button provides quick access to the inspector UI
+- The quiet notification entry point provides quick access to the inspector UI
 - Sensitive headers are masked by default to protect credentials
 
 ## Architecture
@@ -248,8 +267,8 @@ Your App → WiretapHandler → AuthHandler → Network
 │  └──────────────────┘     └──────────┬──────────┘   │
 │                                      │              │
 │  ┌──────────────────┐     ┌──────────▼──────────┐   │
-│  │ WiretapOverlay   │────▶│   WiretapPage       │   │
-│  │ (Floating Button)│     │   (Request List)    │   │
+│  │ Entry Point      │────▶│   WiretapPage       │   │
+│  │ (Notification)   │     │   (Request List)    │   │
 │  └──────────────────┘     └──────────┬──────────┘   │
 │                                      │              │
 │                           ┌──────────▼──────────┐   │
@@ -277,7 +296,7 @@ Always wrap Wiretap integration in `#if DEBUG` to ensure it's excluded from rele
 
 ## Sample App
 
-See the [samples/Wiretap.Maui.Sample](samples/Wiretap.Maui.Sample) folder for a complete working example.
+See the [samples/Wiretap.Maui.Sample](samples/Wiretap.Maui.Sample) folder for a complete working example. It initializes its own SQLite3MC provider before Wiretap.
 
 Run it with:
 ```bash
@@ -293,20 +312,23 @@ dotnet build -t:Run -f net10.0-ios
 |--------|-------------|
 | `UseWiretap(options?)` | Adds Wiretap services to the MAUI app |
 | `AddWiretapHandler()` | Adds the HTTP interception handler to HttpClient |
-| `ShowWiretapOverlay()` | Shows the floating overlay button |
-| `HideWiretapOverlay()` | Hides the floating overlay button |
+| `ShowWiretapEntryPoint()` | Shows the notification entry point |
+| `HideWiretapEntryPoint()` | Hides the notification entry point |
+| `InitializeWiretapAsync()` | Loads persisted records when SQLite is enabled |
 
 ### WiretapOptions
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `MaxStoredRequests` | `int` | 500 | Maximum number of requests to keep |
-| `ShowFloatingButton` | `bool` | true | Whether to show the floating button |
+| `ShowFloatingButton` | `bool` | true | Whether to show the notification entry point |
 | `PrettyPrintJson` | `bool` | true | Format JSON in detail view |
 | `MaskSensitiveHeaders` | `bool` | true | Mask sensitive header values |
 | `CaptureRequestHeaders` | `bool` | true | Capture request headers |
 | `CaptureResponseHeaders` | `bool` | true | Capture response headers |
-| `MaxBodySize` | `int` | 1MB | Max body size to capture |
+| `MaxBodySizeBytes` | `int` | 1MB | Max body bytes to capture from seekable content |
+| `EnablePersistence` | `bool` | true | Store records with the host's SQLite provider |
+| `MaxPersistedRequests` | `int` | 1000 | Maximum records retained on disk |
 | `SensitiveHeaderPatterns` | `string[]` | See below | Headers to mask |
 
 **Default sensitive headers:** `Authorization`, `X-Api-Key`, `Cookie`, `Set-Cookie`

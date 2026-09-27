@@ -5,6 +5,12 @@ namespace Wiretap.Maui.Tests;
 
 public class WiretapStoreTests
 {
+    [Fact]
+    public void ZeroCapacity_IsRejectedBeforeAddingRecords()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => CreateStore(0));
+    }
+
     private static WiretapStore CreateStore(int maxRecords = 500)
     {
         var options = new WiretapOptions { MaxStoredRequests = maxRecords };

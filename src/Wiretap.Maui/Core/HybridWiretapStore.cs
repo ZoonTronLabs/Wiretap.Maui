@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using System.Diagnostics;
 using Wiretap.Maui.Database;
 
 namespace Wiretap.Maui.Core;
@@ -13,13 +14,17 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
     private readonly List<HttpRecord> _memoryCache = new();
     private readonly int _memoryCacheSize;
     private readonly WiretapDatabase _database;
-    private readonly Channel<HttpRecord> _writeQueue;
+    private readonly Channel<(HttpRecord Record, long Generation)> _writeQueue;
     private readonly CancellationTokenSource _cts = new();
+    private readonly SemaphoreSlim _initializationLock = new(1, 1);
+    private readonly SemaphoreSlim _databaseWriteLock = new(1, 1);
     private readonly Task _writeWorker;
     private readonly Task _cleanupWorker;
     private readonly int _retentionDays;
     private readonly int _maxPersistedRequests;
-    private bool _initialized;
+    private volatile bool _initialized;
+    private long _generation;
+    private Task _pendingClear = Task.CompletedTask;
 
     /// <inheritdoc />
     public event Action<HttpRecord>? OnRecordAdded;
@@ -33,6 +38,8 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
     /// <param name="options">Wiretap configuration options.</param>
     public HybridWiretapStore(WiretapOptions options)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MemoryCacheSize);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxPersistedRequests);
         _memoryCacheSize = options.MemoryCacheSize;
         _retentionDays = options.RetentionDays;
         _maxPersistedRequests = options.MaxPersistedRequests;
@@ -40,11 +47,12 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
         var dbPath = options.DatabasePath ?? WiretapDatabase.GetDefaultDatabasePath();
         _database = new WiretapDatabase(dbPath);
 
-        // Unbounded channel for background writes
-        _writeQueue = Channel.CreateUnbounded<HttpRecord>(new UnboundedChannelOptions
+        // Debug traffic must not grow memory without bound when storage is slow.
+        _writeQueue = Channel.CreateBounded<(HttpRecord, long)>(new BoundedChannelOptions(256)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest
         });
 
         // Start background workers
@@ -57,15 +65,18 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
     /// </summary>
     internal HybridWiretapStore(WiretapOptions options, WiretapDatabase database)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MemoryCacheSize);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxPersistedRequests);
         _memoryCacheSize = options.MemoryCacheSize;
         _retentionDays = options.RetentionDays;
         _maxPersistedRequests = options.MaxPersistedRequests;
         _database = database;
 
-        _writeQueue = Channel.CreateUnbounded<HttpRecord>(new UnboundedChannelOptions
+        _writeQueue = Channel.CreateBounded<(HttpRecord, long)>(new BoundedChannelOptions(256)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest
         });
 
         _writeWorker = Task.Run(ProcessWriteQueueAsync);
@@ -92,16 +103,32 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
         if (_initialized)
             return;
 
-        await _database.InitializeAsync();
-
-        // Load recent records into memory cache
-        var recentRecords = await _database.GetRecordsAsync(_memoryCacheSize);
-
-        lock (_lock)
+        await _initializationLock.WaitAsync();
+        try
         {
-            _memoryCache.Clear();
-            _memoryCache.AddRange(recentRecords);
-            _initialized = true;
+            if (_initialized)
+                return;
+
+            await _database.InitializeAsync();
+            var recentRecords = await _database.GetRecordsAsync(_memoryCacheSize);
+
+            lock (_lock)
+            {
+                foreach (var record in recentRecords)
+                {
+                    if (_memoryCache.All(current => current.Id != record.Id))
+                        _memoryCache.Add(record);
+                }
+
+                while (_memoryCache.Count > _memoryCacheSize)
+                    _memoryCache.Remove(_memoryCache.MinBy(r => r.Timestamp)!);
+
+                _initialized = true;
+            }
+        }
+        finally
+        {
+            _initializationLock.Release();
         }
     }
 
@@ -148,21 +175,23 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
     /// <inheritdoc />
     public void Add(HttpRecord record)
     {
+        long generation;
         lock (_lock)
         {
             // Ring buffer: remove oldest if at capacity
             while (_memoryCache.Count >= _memoryCacheSize)
             {
                 // Remove oldest (first in the list after sorting by timestamp ascending)
-                var oldest = _memoryCache.OrderBy(r => r.Timestamp).First();
+                var oldest = _memoryCache.MinBy(r => r.Timestamp)!;
                 _memoryCache.Remove(oldest);
             }
 
             _memoryCache.Add(record);
+            generation = _generation;
         }
 
         // Queue for background write to database
-        _writeQueue.Writer.TryWrite(record);
+        _writeQueue.Writer.TryWrite((record, generation));
 
         // Raise event outside lock
         OnRecordAdded?.Invoke(record);
@@ -174,20 +203,12 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
         lock (_lock)
         {
             _memoryCache.Clear();
+            Interlocked.Increment(ref _generation);
+            var previous = _pendingClear;
+            _pendingClear = Task.Run(() => ClearDatabaseAfterAsync(previous));
         }
 
-        // Clear database in background
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await _database.DeleteAllAsync();
-            }
-            catch
-            {
-                // Log error in production, ignore for now
-            }
-        });
+        _ = LogClearFailureAsync(_pendingClear);
 
         OnRecordsCleared?.Invoke();
     }
@@ -200,11 +221,48 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
         lock (_lock)
         {
             _memoryCache.Clear();
+            Interlocked.Increment(ref _generation);
+            var previous = _pendingClear;
+            _pendingClear = Task.Run(() => ClearDatabaseAfterAsync(previous));
         }
 
-        await _database.DeleteAllAsync();
+        await _pendingClear;
 
         OnRecordsCleared?.Invoke();
+    }
+
+    private async Task ClearDatabaseAfterAsync(Task preceding)
+    {
+        try
+        {
+            await preceding;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Wiretap previous clear failed: {ex}");
+        }
+
+        await _databaseWriteLock.WaitAsync();
+        try
+        {
+            await _database.DeleteAllAsync();
+        }
+        finally
+        {
+            _databaseWriteLock.Release();
+        }
+    }
+
+    private static async Task LogClearFailureAsync(Task clearTask)
+    {
+        try
+        {
+            await clearTask;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Wiretap clear failed: {ex}");
+        }
     }
 
     /// <summary>
@@ -259,11 +317,26 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
             await EnsureInitializedAsync();
 
             var writeCount = 0;
-            await foreach (var record in _writeQueue.Reader.ReadAllAsync(_cts.Token))
+            await foreach (var (record, generation) in _writeQueue.Reader.ReadAllAsync(_cts.Token))
             {
                 try
                 {
-                    await _database.InsertOrReplaceAsync(record);
+                    Task pendingClear;
+                    lock (_lock)
+                        pendingClear = _pendingClear;
+                    await pendingClear;
+
+                    await _databaseWriteLock.WaitAsync(_cts.Token);
+                    try
+                    {
+                        if (generation != Interlocked.Read(ref _generation))
+                            continue;
+                        await _database.InsertOrReplaceAsync(record);
+                    }
+                    finally
+                    {
+                        _databaseWriteLock.Release();
+                    }
                     writeCount++;
 
                     // Periodically enforce max persisted records limit (every 100 writes)
@@ -272,9 +345,13 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
                         await TrimToMaxPersistedAsync();
                     }
                 }
-                catch (Exception)
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested)
                 {
-                    // Log error in production, continue processing queue
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Wiretap persistence write failed: {ex}");
                 }
             }
         }
@@ -367,7 +444,18 @@ public class HybridWiretapStore : IWiretapStore, IAsyncDisposable
             // Ignore errors during shutdown
         }
 
+        try
+        {
+            await _pendingClear;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Wiretap clear during disposal failed: {ex}");
+        }
+
         await _database.DisposeAsync();
+        _initializationLock.Dispose();
+        _databaseWriteLock.Dispose();
         _cts.Dispose();
         GC.SuppressFinalize(this);
     }

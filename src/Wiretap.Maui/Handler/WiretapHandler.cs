@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Buffers;
 using System.Net.Http.Headers;
 using System.Text;
 using Wiretap.Maui.Core;
@@ -153,18 +154,52 @@ public class WiretapHandler : DelegatingHandler
         int maxSize,
         CancellationToken cancellationToken)
     {
+        Stream? stream = null;
+        long position = 0;
         try
         {
-            var bytes = await content.ReadAsByteArrayAsync(cancellationToken);
-            var size = bytes.Length;
-            var truncated = size > maxSize;
-            var displayBytes = truncated ? bytes[..maxSize] : bytes;
-            var encoding = GetEncoding(content.Headers.ContentType);
-            return (encoding.GetString(displayBytes), size, truncated);
+            stream = await content.ReadAsStreamAsync(cancellationToken);
+            if (!stream.CanSeek)
+                return (null, content.Headers.ContentLength ?? 0, true);
+
+            position = stream.Position;
+            var size = content.Headers.ContentLength ?? stream.Length - position;
+            var captureSize = (int)Math.Min(Math.Max(maxSize, 0), size);
+            if (captureSize == 0)
+                return (string.Empty, size, size > 0);
+
+            var buffer = ArrayPool<byte>.Shared.Rent(captureSize);
+            try
+            {
+                var read = 0;
+                while (read < captureSize)
+                {
+                    var count = await stream.ReadAsync(buffer.AsMemory(read, captureSize - read), cancellationToken);
+                    if (count == 0)
+                        break;
+                    read += count;
+                }
+
+                var encoding = GetEncoding(content.Headers.ContentType);
+                return (encoding.GetString(buffer, 0, read), size, size > read);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
-        catch
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
         {
             return (null, 0, false);
+        }
+        finally
+        {
+            if (stream?.CanSeek == true)
+                stream.Position = position;
         }
     }
 

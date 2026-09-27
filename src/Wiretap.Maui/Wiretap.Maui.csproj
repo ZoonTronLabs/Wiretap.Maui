@@ -15,7 +15,7 @@
     <!-- NuGet Package Metadata -->
     <PackageId>Wiretap.Maui</PackageId>
     <Title>Wiretap.Maui</Title>
-    <Description>In-app HTTP traffic inspector for .NET MAUI - debug network requests like Chucker for Android. Zero-config setup, floating overlay button, request/response viewer with JSON formatting.</Description>
+    <Description>In-app HTTP traffic inspector for .NET MAUI with quiet notification access, bounded request capture, and optional host-provided SQLite persistence.</Description>
     <Authors>Artyom</Authors>
     <PackageTags>maui;http;inspector;debug;network;wiretap;chucker;traffic;api;rest</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -26,9 +26,9 @@
     <PackageIcon>icon.png</PackageIcon>
 
     <!-- Versioning -->
-    <Version>1.0.4</Version>
-    <AssemblyVersion>1.0.4.0</AssemblyVersion>
-    <FileVersion>1.0.4.0</FileVersion>
+    <Version>2.0.0</Version>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
 
     <!-- Build settings -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -37,13 +37,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.50" />
+    <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.90" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.5" />
-    <PackageReference Include="CommunityToolkit.Maui" Version="13.0.0" />
+    <PackageReference Include="CommunityToolkit.Maui" Version="15.0.1" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <!-- SQLite persistence -->
-    <PackageReference Include="sqlite-net-pcl" Version="1.9.172" />
-    <PackageReference Include="SQLitePCLRaw.bundle_green" Version="2.1.11" />
+    <!-- The host chooses and initializes its SQLite provider. -->
+    <PackageReference Include="sqlite-net-base" Version="1.9.172" />
     <!-- PDF export -->
     <PackageReference Include="PDFsharp-MigraDoc" Version="6.2.4" />
   </ItemGroup>
@@ -52,5 +51,11 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="" />
     <None Include="..\..\icon.png" Pack="true" PackagePath="" Condition="Exists('..\..\icon.png')" />
   </ItemGroup>
+
+  <Target Name="RejectStaleAndroidArchive" BeforeTargets="GenerateNuspec">
+    <Error
+      Condition="Exists('$(MSBuildProjectDirectory)/bin/$(Configuration)/net10.0-android/$(AssemblyName).aar')"
+      Text="A stale Android AAR would enter the NuGet package. Remove the generated AAR and pack again." />
+  </Target>
 
 </Project>

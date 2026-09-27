@@ -19,8 +19,8 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <!-- SQLite for database tests -->
-    <PackageReference Include="sqlite-net-pcl" Version="1.9.172" />
-    <PackageReference Include="SQLitePCLRaw.bundle_green" Version="2.1.11" />
+    <PackageReference Include="sqlite-net-base" Version="1.9.172" />
+    <PackageReference Include="SQLite3MC.PCLRaw.bundle" Version="2.4.0" />
     <!-- PDF export -->
     <PackageReference Include="PDFsharp-MigraDoc" Version="6.2.4" />
     <PackageReference Include="xunit.v3" Version="3.2.2" />

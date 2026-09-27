@@ -20,7 +20,11 @@ public sealed partial class WiretapEntryPointService
 
         EnsureChannel(manager);
 
-        var launchIntent = context.PackageManager?.GetLaunchIntentForPackage(context.PackageName);
+        var packageName = context.PackageName;
+        if (packageName is null)
+            return;
+
+        var launchIntent = context.PackageManager?.GetLaunchIntentForPackage(packageName);
         if (launchIntent == null)
             return;
 
@@ -39,14 +43,14 @@ public sealed partial class WiretapEntryPointService
 
         var lines = BuildPreviewLines();
 
-        var builder = new NotificationCompat.Builder(context)
-            .SetContentTitle("Wiretap")
-            .SetContentText(lines.Count > 0 ? lines[0] : contentText)
-            .SetSmallIcon(Android.Resource.Drawable.IcMenuInfoDetails)
-            .SetOngoing(true)
-            .SetOnlyAlertOnce(true)
-            .SetContentIntent(pendingIntent)
-            .SetPriority((int)NotificationCompat.PriorityLow);
+        var builder = new NotificationCompat.Builder(context, ChannelId);
+        builder.SetContentTitle("Wiretap");
+        builder.SetContentText(lines.Count > 0 ? lines[0] : contentText);
+        builder.SetSmallIcon(Android.Resource.Drawable.IcMenuInfoDetails);
+        builder.SetOngoing(true);
+        builder.SetOnlyAlertOnce(true);
+        builder.SetContentIntent(pendingIntent);
+        builder.SetPriority((int)NotificationCompat.PriorityLow);
 
         if (lines.Count > 0)
         {
@@ -60,18 +64,15 @@ public sealed partial class WiretapEntryPointService
             builder.SetStyle(inboxStyle);
         }
 
-        if (OperatingSystem.IsAndroidVersionAtLeast(26))
-            builder.SetChannelId(ChannelId);
-
         var notification = builder.Build();
-
-        NotificationManagerCompat.From(context).Notify(NotificationId, notification);
+        if (notification is not null)
+            NotificationManagerCompat.From(context)?.Notify(NotificationId, notification);
     }
 
     partial void HidePlatform()
     {
         var context = AApplication.Context;
-        NotificationManagerCompat.From(context).Cancel(NotificationId);
+        NotificationManagerCompat.From(context)?.Cancel(NotificationId);
     }
 
     private static void EnsureChannel(NotificationManager manager)

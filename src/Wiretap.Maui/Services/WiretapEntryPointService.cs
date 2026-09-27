@@ -10,15 +10,20 @@ namespace Wiretap.Maui.Services;
 public sealed partial class WiretapEntryPointService : IDisposable
 {
     private const int MaxPreviewLines = 5;
+    private static readonly TimeSpan UpdateDelay = TimeSpan.FromMilliseconds(500);
     private readonly IWiretapStore _store;
     private readonly WiretapOptions _options;
+    private readonly object _sync = new();
+    private readonly Timer _updateTimer;
     private bool _isVisible;
-    private int _lastCount = -1;
+    private bool _disposed;
+    private bool _updateScheduled;
 
     public WiretapEntryPointService(IWiretapStore store, WiretapOptions options)
     {
         _store = store;
         _options = options;
+        _updateTimer = new Timer(_ => UpdateCount(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 
         _store.OnRecordAdded += OnRecordAdded;
         _store.OnRecordsCleared += OnRecordsCleared;
@@ -32,8 +37,18 @@ public sealed partial class WiretapEntryPointService : IDisposable
         if (!_options.ShowFloatingButton)
             return;
 
-        _isVisible = true;
-        UpdateCount();
+        lock (_sync)
+        {
+            if (_disposed)
+                return;
+
+            _isVisible = true;
+            if (!_updateScheduled)
+            {
+                _updateScheduled = true;
+                _updateTimer.Change(TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+            }
+        }
     }
 
     /// <summary>
@@ -41,32 +56,55 @@ public sealed partial class WiretapEntryPointService : IDisposable
     /// </summary>
     public void Hide()
     {
-        _isVisible = false;
-        _lastCount = -1;
-        HidePlatform();
+        lock (_sync)
+        {
+            if (_disposed)
+                return;
+
+            _isVisible = false;
+            _updateScheduled = false;
+            _updateTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            HidePlatform();
+        }
     }
 
     private void OnRecordAdded(HttpRecord _)
     {
-        UpdateCount();
+        ScheduleUpdate();
     }
 
     private void OnRecordsCleared()
     {
-        UpdateCount();
+        ScheduleUpdate();
+    }
+
+    private void ScheduleUpdate()
+    {
+        lock (_sync)
+        {
+            if (_isVisible && !_disposed && !_updateScheduled)
+            {
+                _updateScheduled = true;
+                _updateTimer.Change(UpdateDelay, Timeout.InfiniteTimeSpan);
+            }
+        }
     }
 
     private void UpdateCount()
     {
-        if (!_isVisible)
-            return;
+        lock (_sync)
+        {
+            _updateScheduled = false;
+            if (!_isVisible || _disposed)
+                return;
 
-        var count = _store.GetRecords().Count;
-        if (count == _lastCount)
-            return;
+            ShowPlatform(_store.Count);
+        }
+    }
 
-        _lastCount = count;
-        ShowPlatform(count);
+    private bool IsVisible
+    {
+        get { lock (_sync) return _isVisible && !_disposed; }
     }
 
     partial void ShowPlatform(int count);
@@ -74,7 +112,7 @@ public sealed partial class WiretapEntryPointService : IDisposable
 
     private IReadOnlyList<string> BuildPreviewLines()
     {
-        var lines = new List<string>();
+        var lines = new List<string>(MaxPreviewLines);
         var records = _store.GetRecords();
 
         foreach (var record in records.Take(MaxPreviewLines))
@@ -139,6 +177,11 @@ public sealed partial class WiretapEntryPointService : IDisposable
         _store.OnRecordAdded -= OnRecordAdded;
         _store.OnRecordsCleared -= OnRecordsCleared;
         Hide();
+        lock (_sync)
+        {
+            _disposed = true;
+            _updateTimer.Dispose();
+        }
     }
 
     internal static void OpenInspectorFromNotification()

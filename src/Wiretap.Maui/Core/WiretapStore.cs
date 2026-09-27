@@ -7,7 +7,7 @@ namespace Wiretap.Maui.Core;
 public class WiretapStore : IWiretapStore
 {
     private readonly object _lock = new();
-    private readonly List<HttpRecord> _records = new();
+    private readonly List<HttpRecord> _records;
     private readonly int _maxRecords;
 
     /// <inheritdoc />
@@ -22,7 +22,9 @@ public class WiretapStore : IWiretapStore
     /// <param name="options">Wiretap configuration options.</param>
     public WiretapStore(WiretapOptions options)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxStoredRequests);
         _maxRecords = options.MaxStoredRequests;
+        _records = new List<HttpRecord>(_maxRecords);
     }
 
     /// <inheritdoc />

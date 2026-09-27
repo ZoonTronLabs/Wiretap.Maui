@@ -44,7 +44,7 @@ public partial class WiretapDetailPage : ContentPage, IQueryAttributable
             return;
 
         if (recordId != Guid.Empty)
-            LoadRecord(recordId);
+            _ = LoadRecordAsync(recordId);
     }
 
     /// <summary>
@@ -62,6 +62,28 @@ public partial class WiretapDetailPage : ContentPage, IQueryAttributable
 
         _currentRecord = record;
         DisplayRecord(record);
+    }
+
+    private async Task LoadRecordAsync(Guid recordId)
+    {
+        try
+        {
+            var record = await _store.GetRecordAsync(recordId);
+            if (record is null)
+            {
+                MethodLabel.Text = "Not Found";
+                UrlLabel.Text = "Record not found";
+                return;
+            }
+
+            _currentRecord = record;
+            DisplayRecord(record);
+        }
+        catch (Exception)
+        {
+            MethodLabel.Text = "Unavailable";
+            UrlLabel.Text = "Could not load this record";
+        }
     }
 
     private void DisplayRecord(HttpRecord record)
