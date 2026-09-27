@@ -139,6 +139,58 @@ public class WiretapHandlerTests
     }
 
     [Fact]
+    public async Task Handler_BuffersSmallNonSeekableResponseForCaller()
+    {
+        var body = "{\"id\":\"registered\",\"previousDeviceDeactivated\":false}";
+        var store = CreateStore();
+        var content = new StreamContent(new NonSeekableReadStream(Encoding.UTF8.GetBytes(body)));
+        content.Headers.ContentLength = Encoding.UTF8.GetByteCount(body);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        var handler = new WiretapHandler(store, CreateOptions())
+        {
+            InnerHandler = new MockInnerHandler(new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = content
+            })
+        };
+        using var client = new HttpClient(handler);
+
+        using var response = await client.PostAsync(
+            "https://api.example.com/devices/register", null, TestContext.Current.CancellationToken);
+        var actualBody = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(body, actualBody);
+        var record = Assert.Single(store.GetRecords());
+        Assert.Equal(body, record.ResponseBody);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Handler_LeavesUnknownLengthResponseUntouched()
+    {
+        var body = "{\"status\":\"ok\"}";
+        var store = CreateStore();
+        var content = new StreamContent(new NonSeekableReadStream(Encoding.UTF8.GetBytes(body)));
+        var handler = new WiretapHandler(store, CreateOptions())
+        {
+            InnerHandler = new MockInnerHandler(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = content
+            })
+        };
+        using var client = new HttpClient(handler);
+
+        using var response = await client.GetAsync(
+            "https://api.example.com/stream", TestContext.Current.CancellationToken);
+        var actualBody = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(body, actualBody);
+        var record = Assert.Single(store.GetRecords());
+        Assert.Null(record.ResponseBody);
+        Assert.True(record.ResponseBodyTruncated);
+    }
+
+    [Fact]
     public async Task Handler_PreservesRequestBodyForDownstreamHandlers()
     {
         // Arrange
@@ -314,7 +366,7 @@ public class WiretapHandlerTests
     }
 
     [Fact]
-    public async Task Handler_DoesNotConsumeNonSeekableRequestBody()
+    public async Task Handler_PreservesNonSeekableRequestBodyForDownstream()
     {
         var store = CreateStore();
         var payload = new string('X', 500);
@@ -335,7 +387,7 @@ public class WiretapHandlerTests
 
         Assert.Equal(payload, downstreamBody);
         var record = Assert.Single(store.GetRecords());
-        Assert.Null(record.RequestBody);
+        Assert.Equal(payload[..100], record.RequestBody);
         Assert.Equal(payload.Length, record.RequestSize);
         Assert.True(record.RequestBodyTruncated);
     }

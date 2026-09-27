@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Buffers;
 using System.Net.Http.Headers;
 using System.Text;
 using Wiretap.Maui.Core;
@@ -8,10 +7,12 @@ namespace Wiretap.Maui.Handler;
 
 /// <summary>
 /// HTTP message handler that intercepts and records all HTTP traffic for inspection.
-/// Reads request/response bodies for capture without replacing the original content.
+/// Buffers only bodies with a known size within a fixed memory limit so inspection
+/// never probes a live one-shot response stream.
 /// </summary>
 public class WiretapHandler : DelegatingHandler
 {
+    private const int MinimumBufferLimitBytes = 1_048_576;
     private readonly IWiretapStore _store;
     private readonly WiretapOptions _options;
 
@@ -90,8 +91,8 @@ public class WiretapHandler : DelegatingHandler
             record.RequestBody = body;
             record.RequestSize = size;
             record.RequestBodyTruncated = truncated;
-            // No replacement — ReadAsByteArrayAsync buffers internally,
-            // so downstream handlers can still read the original content.
+            // ReadAsByteArrayAsync buffers internally, so downstream handlers
+            // can still read the original content.
         }
     }
 
@@ -123,7 +124,7 @@ public class WiretapHandler : DelegatingHandler
             record.ResponseBody = body;
             record.ResponseSize = size;
             record.ResponseBodyTruncated = truncated;
-            // No replacement — the original content remains intact for callers.
+            // No replacement — the buffered content remains readable by callers.
         }
     }
 
@@ -154,39 +155,20 @@ public class WiretapHandler : DelegatingHandler
         int maxSize,
         CancellationToken cancellationToken)
     {
-        Stream? stream = null;
-        long position = 0;
         try
         {
-            stream = await content.ReadAsStreamAsync(cancellationToken);
-            if (!stream.CanSeek)
-                return (null, content.Headers.ContentLength ?? 0, true);
+            var declaredSize = content.Headers.ContentLength;
+            var bufferLimit = Math.Max(maxSize, MinimumBufferLimitBytes);
+            if (declaredSize is null || declaredSize > bufferLimit || maxSize <= 0)
+                return (null, declaredSize ?? 0, true);
 
-            position = stream.Position;
-            var size = content.Headers.ContentLength ?? stream.Length - position;
-            var captureSize = (int)Math.Min(Math.Max(maxSize, 0), size);
-            if (captureSize == 0)
-                return (string.Empty, size, size > 0);
-
-            var buffer = ArrayPool<byte>.Shared.Rent(captureSize);
-            try
-            {
-                var read = 0;
-                while (read < captureSize)
-                {
-                    var count = await stream.ReadAsync(buffer.AsMemory(read, captureSize - read), cancellationToken);
-                    if (count == 0)
-                        break;
-                    read += count;
-                }
-
-                var encoding = GetEncoding(content.Headers.ContentType);
-                return (encoding.GetString(buffer, 0, read), size, size > read);
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
+            // ReadAsStreamAsync can hand out a one-shot native response stream on iOS.
+            // Even checking CanSeek before the caller reads it can leave the caller
+            // with an empty body. The byte-array API buffers the body for replay.
+            var bytes = await content.ReadAsByteArrayAsync(cancellationToken);
+            var captureSize = Math.Min(bytes.Length, maxSize);
+            var encoding = GetEncoding(content.Headers.ContentType);
+            return (encoding.GetString(bytes, 0, captureSize), bytes.Length, bytes.Length > captureSize);
         }
         catch (OperationCanceledException)
         {
@@ -195,11 +177,6 @@ public class WiretapHandler : DelegatingHandler
         catch (Exception)
         {
             return (null, 0, false);
-        }
-        finally
-        {
-            if (stream?.CanSeek == true)
-                stream.Position = position;
         }
     }
 
