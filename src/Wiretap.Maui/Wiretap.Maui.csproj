@@ -19,8 +19,8 @@
     <Authors>Artyom</Authors>
     <PackageTags>maui;http;inspector;debug;network;wiretap;chucker;traffic;api;rest</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/WiretapMaui/Wiretap.Maui</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/WiretapMaui/Wiretap.Maui</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/ZoonTronLabs/Wiretap.Maui</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ZoonTronLabs/Wiretap.Maui</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
