@@ -7,8 +7,8 @@ namespace Wiretap.Maui.Handler;
 
 /// <summary>
 /// HTTP message handler that intercepts and records all HTTP traffic for inspection.
-/// Buffers only bodies with a known size within a fixed memory limit so inspection
-/// never probes a live one-shot response stream.
+/// Buffers small known-length bodies for replay and observes other bodies only
+/// as the normal consumer reads them, with a bounded preview.
 /// </summary>
 public class WiretapHandler : DelegatingHandler
 {
@@ -43,19 +43,27 @@ public class WiretapHandler : DelegatingHandler
         try
         {
             // Capture request details
-            await CaptureRequestAsync(request, record, cancellationToken);
+            await CaptureRequestAsync(request, record, cancellationToken).ConfigureAwait(false);
 
             // Send the request
-            var response = await base.SendAsync(request, cancellationToken);
+            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
             stopwatch.Stop();
             record.Duration = stopwatch.Elapsed;
 
             // Capture response details
-            await CaptureResponseAsync(response, record, cancellationToken);
-
-            record.IsComplete = true;
-            _store.Add(record);
+            if (RequiresObservedCapture(response.Content))
+            {
+                CaptureResponseMetadata(response, record);
+                response.Content = new BodyCaptureContent(response.Content, _options.MaxBodySizeBytes,
+                    result => CompleteObservedResponse(record, result));
+            }
+            else
+            {
+                await CaptureResponseAsync(response, record, cancellationToken).ConfigureAwait(false);
+                record.IsComplete = true;
+                _store.Add(record);
+            }
 
             return response;
         }
@@ -84,10 +92,19 @@ public class WiretapHandler : DelegatingHandler
                 CaptureHeaders(request.Content.Headers, record.RequestHeaders);
         }
 
-        if (request.Content != null)
+        if (RequiresObservedCapture(request.Content))
+        {
+            request.Content = new BodyCaptureContent(request.Content!, _options.MaxBodySizeBytes, result =>
+            {
+                record.RequestBody = result.Body;
+                record.RequestSize = result.Size;
+                record.RequestBodyTruncated = result.Truncated;
+            });
+        }
+        else if (request.Content != null)
         {
             var (body, size, truncated) = await ReadContentForDisplayAsync(
-                request.Content, _options.MaxBodySizeBytes, cancellationToken);
+                request.Content, _options.MaxBodySizeBytes, cancellationToken).ConfigureAwait(false);
             record.RequestBody = body;
             record.RequestSize = size;
             record.RequestBodyTruncated = truncated;
@@ -100,6 +117,27 @@ public class WiretapHandler : DelegatingHandler
         HttpResponseMessage response,
         HttpRecord record,
         CancellationToken cancellationToken)
+    {
+        CaptureResponseMetadata(response, record);
+
+        // Capture body
+        if (response.Content != null)
+        {
+            var (body, size, truncated) = await ReadContentForDisplayAsync(
+                response.Content, _options.MaxBodySizeBytes, cancellationToken).ConfigureAwait(false);
+            record.ResponseBody = body;
+            record.ResponseSize = size;
+            record.ResponseBodyTruncated = truncated;
+            // No replacement — the buffered content remains readable by callers.
+        }
+    }
+
+    private bool RequiresObservedCapture(HttpContent? content) =>
+        content is not null && _options.MaxBodySizeBytes > 0 &&
+        (content.Headers.ContentLength is null ||
+         content.Headers.ContentLength > Math.Max(_options.MaxBodySizeBytes, MinimumBufferLimitBytes));
+
+    private void CaptureResponseMetadata(HttpResponseMessage response, HttpRecord record)
     {
         record.StatusCode = (int)response.StatusCode;
         record.ReasonPhrase = response.ReasonPhrase;
@@ -115,17 +153,23 @@ public class WiretapHandler : DelegatingHandler
                 CaptureHeaders(response.Content.Headers, record.ResponseHeaders);
             }
         }
+    }
 
-        // Capture body
-        if (response.Content != null)
+    private void CompleteObservedResponse(HttpRecord record, BodyCaptureResult result)
+    {
+        record.ResponseBody = result.Body;
+        record.ResponseSize = result.Size;
+        record.ResponseBodyTruncated = result.Truncated;
+        record.IsComplete = result.Transfer switch
         {
-            var (body, size, truncated) = await ReadContentForDisplayAsync(
-                response.Content, _options.MaxBodySizeBytes, cancellationToken);
-            record.ResponseBody = body;
-            record.ResponseSize = size;
-            record.ResponseBodyTruncated = truncated;
-            // No replacement — the buffered content remains readable by callers.
-        }
+            BodyTransfer.Complete => true,
+            BodyTransfer.Abandon => true,
+            BodyTransfer.Failed => false,
+            _ => throw new UnreachableException("Unhandled body transfer outcome")
+        };
+        if (result.Transfer is BodyTransfer.Failed failed)
+            record.ErrorMessage = failed.Error.Message;
+        _store.Add(record);
     }
 
     private void CaptureHeaders(HttpHeaders headers, Dictionary<string, string[]> target)
@@ -165,7 +209,7 @@ public class WiretapHandler : DelegatingHandler
             // ReadAsStreamAsync can hand out a one-shot native response stream on iOS.
             // Even checking CanSeek before the caller reads it can leave the caller
             // with an empty body. The byte-array API buffers the body for replay.
-            var bytes = await content.ReadAsByteArrayAsync(cancellationToken);
+            var bytes = await content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
             var captureSize = Math.Min(bytes.Length, maxSize);
             var encoding = GetEncoding(content.Headers.ContentType);
             return (encoding.GetString(bytes, 0, captureSize), bytes.Length, bytes.Length > captureSize);

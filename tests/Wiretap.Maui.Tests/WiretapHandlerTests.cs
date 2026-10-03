@@ -166,7 +166,7 @@ public class WiretapHandlerTests
     }
 
     [Fact]
-    public async Task Handler_LeavesUnknownLengthResponseUntouched()
+    public async Task Handler_CapturesUnknownLengthResponseWithoutConsumingItTwice()
     {
         var body = "{\"status\":\"ok\"}";
         var store = CreateStore();
@@ -186,8 +186,9 @@ public class WiretapHandlerTests
 
         Assert.Equal(body, actualBody);
         var record = Assert.Single(store.GetRecords());
-        Assert.Null(record.ResponseBody);
-        Assert.True(record.ResponseBodyTruncated);
+        Assert.Equal(body, record.ResponseBody);
+        Assert.Equal(Encoding.UTF8.GetByteCount(body), record.ResponseSize);
+        Assert.False(record.ResponseBodyTruncated);
     }
 
     [Fact]
@@ -530,6 +531,191 @@ public class WiretapHandlerTests
         Assert.Equal((int)statusCode, record.StatusCode);
         Assert.True(record.IsComplete);
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(20)]
+    [InlineData(2_000_000)]
+    public async Task Handler_BoundsUnknownLengthPreviewAndCountsAllBytes(int size)
+    {
+        var body = new string('X', size);
+        var store = CreateStore();
+        var content = new StreamContent(new NonSeekableReadStream(Encoding.UTF8.GetBytes(body)));
+        content.Headers.ContentType = new("application/json");
+        using var client = CreateStreamingClient(store, content, limit: 100);
+        using var response = await client.GetAsync("https://api.example.com/chunked", TestContext.Current.CancellationToken);
+
+        Assert.Equal(body, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var record = Assert.Single(store.GetRecords());
+        Assert.Equal(body[..Math.Min(size, 100)], record.ResponseBody);
+        Assert.Equal(size, record.ResponseSize);
+        Assert.Equal(size > 100, record.ResponseBodyTruncated);
+        Assert.True(record.IsComplete);
+    }
+
+    [Fact]
+    public async Task Handler_ResponseHeadersReadDoesNotReadAheadAndRecordsAtEndOfStream()
+    {
+        var bytes = Encoding.UTF8.GetBytes("{\"message\":\"Привет\"}");
+        var store = CreateStore();
+        var content = new StreamContent(new NonSeekableReadStream(bytes));
+        content.Headers.ContentType = new("application/json");
+        using var client = CreateStreamingClient(store, content);
+        using var response = await client.GetAsync("https://api.example.com/chunked",
+            HttpCompletionOption.ResponseHeadersRead, TestContext.Current.CancellationToken);
+        Assert.Equal(0, store.Count);
+
+        await using var stream = await response.Content.ReadAsStreamAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(0, store.Count);
+        // A zero-sized read is not EOF.
+        Assert.Equal(0, await stream.ReadAsync(Memory<byte>.Empty, TestContext.Current.CancellationToken));
+        Assert.Equal(0, store.Count);
+        using var output = new MemoryStream();
+        await stream.CopyToAsync(output, TestContext.Current.CancellationToken);
+
+        Assert.Equal(bytes, output.ToArray());
+        var record = Assert.Single(store.GetRecords());
+        Assert.Equal(Encoding.UTF8.GetString(bytes), record.ResponseBody);
+        Assert.Equal(bytes.Length, record.ResponseSize);
+        Assert.False(record.ResponseBodyTruncated);
+        response.Dispose();
+        Assert.Equal(1, store.Count);
+    }
+
+    [Fact]
+    public async Task Handler_PartialStreamDisposalRecordsOnlyBytesActuallyRead()
+    {
+        var store = CreateStore();
+        var content = new StreamContent(new NonSeekableReadStream(Encoding.UTF8.GetBytes("abcdef")));
+        using var client = CreateStreamingClient(store, content);
+        using var response = await client.GetAsync("https://api.example.com/chunked",
+            HttpCompletionOption.ResponseHeadersRead, TestContext.Current.CancellationToken);
+        using var stream = response.Content.ReadAsStream(TestContext.Current.CancellationToken);
+        Assert.Equal(0, store.Count);
+        var buffer = new byte[3];
+        Assert.Equal(3, stream.Read(buffer, 0, buffer.Length));
+        stream.Dispose();
+
+        var record = Assert.Single(store.GetRecords());
+        Assert.Equal("abc", record.ResponseBody);
+        Assert.Equal(3, record.ResponseSize);
+        Assert.True(record.ResponseBodyTruncated);
+        response.Dispose();
+        Assert.Equal(1, store.Count);
+    }
+
+    [Fact]
+    public async Task Handler_DisposingUnreadResponsePublishesHeadersOnce()
+    {
+        var store = CreateStore();
+        var content = new StreamContent(new NonSeekableReadStream(Encoding.UTF8.GetBytes("unused")));
+        content.Headers.ContentType = new("application/json");
+        using var client = CreateStreamingClient(store, content);
+        using var response = await client.GetAsync("https://api.example.com/chunked",
+            HttpCompletionOption.ResponseHeadersRead, TestContext.Current.CancellationToken);
+        response.Dispose();
+        response.Dispose();
+
+        var record = Assert.Single(store.GetRecords());
+        Assert.Equal(200, record.StatusCode);
+        Assert.True(record.ResponseBodyTruncated);
+        Assert.Equal("application/json", record.ResponseHeaders["Content-Type"][0]);
+    }
+
+    [Fact]
+    public async Task Handler_UnknownLengthCancellationRemainsCancellation()
+    {
+        var store = CreateStore();
+        var content = new StreamContent(new NonSeekableReadStream(Encoding.UTF8.GetBytes("abc")));
+        using var client = CreateStreamingClient(store, content);
+        using var response = await client.GetAsync("https://api.example.com/chunked",
+            HttpCompletionOption.ResponseHeadersRead, TestContext.Current.CancellationToken);
+        await using var stream = await response.Content.ReadAsStreamAsync(TestContext.Current.CancellationToken);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await stream.ReadExactlyAsync(new byte[1], cancelled.Token));
+
+        var record = Assert.Single(store.GetRecords());
+        Assert.False(record.IsComplete);
+        Assert.True(record.IsFailed);
+        Assert.True(record.ResponseBodyTruncated);
+    }
+
+    [Fact]
+    public async Task Handler_CapturesJsonContentRequestWhileSerializing()
+    {
+        var store = CreateStore();
+        using var handler = new WiretapHandler(store, CreateOptions())
+        {
+            InnerHandler = new MockInnerHandler(async request =>
+            {
+                var body = await request.Content!.ReadAsStringAsync(TestContext.Current.CancellationToken);
+                Assert.Equal("{\"id\":42}", body);
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            })
+        };
+        using var client = new HttpClient(handler);
+        using var requestContent = System.Net.Http.Json.JsonContent.Create(new { id = 42 });
+        Assert.Null(requestContent.Headers.ContentLength);
+        using var response = await client.PostAsync("https://api.example.com/json", requestContent,
+            TestContext.Current.CancellationToken);
+
+        var record = Assert.Single(store.GetRecords());
+        Assert.Equal("{\"id\":42}", record.RequestBody);
+        Assert.Equal(9, record.RequestSize);
+        Assert.False(record.RequestBodyTruncated);
+    }
+
+    [Fact]
+    public async Task Handler_CapturesRealChunkedGzipResponseWithoutDoubleConsumption()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var body = "{\"message\":\"Привет\",\"ok\":true}";
+        using var compressed = new MemoryStream();
+        using (var gzip = new System.IO.Compression.GZipStream(compressed,
+            System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
+            gzip.Write(Encoding.UTF8.GetBytes(body));
+        var payload = compressed.ToArray();
+        using var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var serve = ServeChunkedResponseAsync(listener, payload, ct);
+        var store = CreateStore();
+        using var client = new HttpClient(new WiretapHandler(store, CreateOptions())
+        {
+            InnerHandler = new HttpClientHandler { AutomaticDecompression = DecompressionMethods.GZip }
+        });
+        using var response = await client.GetAsync($"http://127.0.0.1:{port}/json", ct);
+        Assert.Equal(body, await response.Content.ReadAsStringAsync(ct));
+        await serve;
+
+        var record = Assert.Single(store.GetRecords());
+        Assert.Equal(body, record.ResponseBody);
+        Assert.Equal(Encoding.UTF8.GetByteCount(body), record.ResponseSize);
+        Assert.False(record.ResponseBodyTruncated);
+        Assert.True(record.IsComplete);
+    }
+
+    private static async Task ServeChunkedResponseAsync(System.Net.Sockets.TcpListener listener,
+        byte[] payload, CancellationToken ct)
+    {
+        using var connection = await listener.AcceptTcpClientAsync(ct);
+        await using var stream = connection.GetStream();
+        using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
+        while (await reader.ReadLineAsync(ct) is { Length: > 0 }) { }
+        var headers = $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
+            $"Content-Encoding: gzip\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{payload.Length:X}\r\n";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(headers), ct);
+        await stream.WriteAsync(payload, ct);
+        await stream.WriteAsync(Encoding.ASCII.GetBytes("\r\n0\r\n\r\n"), ct);
+    }
+
+    private static HttpClient CreateStreamingClient(WiretapStore store, HttpContent content, int limit = 1_048_576) =>
+        new(new WiretapHandler(store, CreateOptions(maxBodySize: limit))
+        {
+            InnerHandler = new MockInnerHandler(new HttpResponseMessage(HttpStatusCode.OK) { Content = content })
+        });
 
     private sealed class NonSeekableReadStream(byte[] data) : Stream
     {

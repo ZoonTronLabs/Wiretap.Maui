@@ -150,6 +150,13 @@ Customize Wiretap behavior with options:
 })
 ```
 
+Bodies without `Content-Length` (including chunked and decompressed JSON) are captured
+as the application reads them. Wiretap retains at most `MaxBodySizeBytes` per body
+while counting all transferred bytes. It never reads a streaming response ahead of
+the caller. With `ResponseHeadersRead`, its record appears after EOF or disposal;
+a partially read or unread response is marked as truncated. Cancelling a body read
+still cancels the HTTP operation. Small known-length bodies remain buffered for replay.
+
 ## Show/Hide the Notification Entry Point
 
 Android keeps one low-importance ongoing notification that opens the inspector. iOS keeps a passive item in the notification list: Wiretap shows no foreground banner or sound and never changes the app icon badge. Updates are coalesced. The host app remains responsible for notification permissions.
@@ -326,7 +333,7 @@ dotnet build -t:Run -f net10.0-ios
 | `MaskSensitiveHeaders` | `bool` | true | Mask sensitive header values |
 | `CaptureRequestHeaders` | `bool` | true | Capture request headers |
 | `CaptureResponseHeaders` | `bool` | true | Capture response headers |
-| `MaxBodySizeBytes` | `int` | 1MB | Max body bytes to capture from seekable content |
+| `MaxBodySizeBytes` | `int` | 1MB | Max preview bytes retained per body |
 | `EnablePersistence` | `bool` | true | Store records with the host's SQLite provider |
 | `MaxPersistedRequests` | `int` | 1000 | Maximum records retained on disk |
 | `SensitiveHeaderPatterns` | `string[]` | See below | Headers to mask |

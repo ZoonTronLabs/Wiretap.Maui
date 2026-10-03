@@ -33,6 +33,7 @@
     <Compile Include="..\..\src\Wiretap.Maui\Core\WiretapStore.cs" Link="Core\WiretapStore.cs" />
     <Compile Include="..\..\src\Wiretap.Maui\WiretapOptions.cs" Link="WiretapOptions.cs" />
     <Compile Include="..\..\src\Wiretap.Maui\Handler\WiretapHandler.cs" Link="Handler\WiretapHandler.cs" />
+    <Compile Include="..\..\src\Wiretap.Maui\Handler\BodyCaptureContent.cs" Link="Handler\BodyCaptureContent.cs" />
     <Compile Include="..\..\src\Wiretap.Maui\Services\CurlExporter.cs" Link="Services\CurlExporter.cs" />
     <Compile Include="..\..\src\Wiretap.Maui\Core\RecordFilter.cs" Link="Core\RecordFilter.cs" />
     <Compile Include="..\..\src\Wiretap.Maui\Services\SearchService.cs" Link="Services\SearchService.cs" />
