@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:ui="clr-namespace:Wiretap.Maui.UI"
+             x:DataType="ui:WiretapDetailPage"
              x:Class="Wiretap.Maui.UI.WiretapDetailPage"
              Title="Request Details"
              BackgroundColor="{AppThemeBinding Light={StaticResource White}, Dark={StaticResource Black}}">
@@ -23,15 +25,14 @@
                 <Setter Property="FontSize" Value="12" />
                 <Setter Property="TextColor" Value="{AppThemeBinding Light=#444444, Dark=#BBBBBB}" />
             </Style>
-            <Style x:Key="CodeEditorStyle" TargetType="Editor">
-                <Setter Property="FontFamily" Value="Courier New" />
-                <Setter Property="FontSize" Value="12" />
-                <Setter Property="IsReadOnly" Value="True" />
-                <Setter Property="AutoSize" Value="Disabled" />
-                <Setter Property="HeightRequest" Value="300" />
-                <Setter Property="BackgroundColor" Value="{AppThemeBinding Light=#F8F8F8, Dark=#1E1E1E}" />
-                <Setter Property="TextColor" Value="{AppThemeBinding Light=#333333, Dark=#D4D4D4}" />
-            </Style>
+            <DataTemplate x:Key="BodyRowTemplate" x:DataType="x:String">
+                <Grid Padding="10,0"
+                      BackgroundColor="{AppThemeBinding Light=#F8F8F8, Dark=#1E1E1E}">
+                    <Label Text="{Binding .}"
+                           Style="{StaticResource MonospaceStyle}"
+                           LineBreakMode="CharacterWrap" />
+                </Grid>
+            </DataTemplate>
             <Style x:Key="CopyButtonStyle" TargetType="Button">
                 <Setter Property="FontSize" Value="12" />
                 <Setter Property="Padding" Value="10,5" />
@@ -131,13 +132,18 @@
                     CornerRadius="4" />
         </Grid>
 
-        <!-- Content Area -->
-        <ScrollView Grid.Row="2" Padding="15,0,15,15">
-            <Grid>
-                <!-- Request Content -->
-                <VerticalStackLayout x:Name="RequestContent" Spacing="5">
-
-                    <!-- Request Headers Section -->
+        <!-- Each tab owns one viewport; body rows are recycled by the native list. -->
+        <CollectionView x:Name="RequestContent"
+                        Grid.Row="2"
+                        Margin="15,0,15,15"
+                        SelectionMode="None"
+                        ItemsLayout="VerticalList"
+                        ItemSizingStrategy="MeasureAllItems"
+                        VerticalOptions="Fill"
+                        VerticalScrollBarVisibility="Always"
+                        ItemTemplate="{StaticResource BodyRowTemplate}">
+            <CollectionView.Header>
+                <VerticalStackLayout Spacing="5">
                     <Grid ColumnDefinitions="*,Auto">
                         <Label Text="Headers" Style="{StaticResource SectionHeaderStyle}" />
                         <Button Grid.Column="1"
@@ -153,39 +159,40 @@
                             <RoundRectangle CornerRadius="6" />
                         </Border.StrokeShape>
                         <Label x:Name="RequestHeadersLabel"
-                               Style="{StaticResource MonospaceStyle}" />
+                               Style="{StaticResource MonospaceStyle}"
+                               LineBreakMode="CharacterWrap" />
                     </Border>
-
-                    <!-- Request Body Section -->
-                    <Grid ColumnDefinitions="*,Auto">
+                    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
                         <Label Text="Body" Style="{StaticResource SectionHeaderStyle}" />
                         <Button Grid.Column="1"
                                 Text="Copy"
                                 Style="{StaticResource CopyButtonStyle}"
                                 Clicked="OnCopyRequestBodyClicked" />
                     </Grid>
-                    <Border Padding="10"
-                            BackgroundColor="{AppThemeBinding Light=#F8F8F8, Dark=#1E1E1E}"
-                            StrokeThickness="1"
-                            Stroke="{AppThemeBinding Light=#E0E0E0, Dark=#333333}">
-                        <Border.StrokeShape>
-                            <RoundRectangle CornerRadius="6" />
-                        </Border.StrokeShape>
-                        <Editor x:Name="RequestBodyEditor" Style="{StaticResource CodeEditorStyle}" />
-                    </Border>
-
-                    <Label x:Name="RequestTruncatedLabel"
-                           Text="⚠️ Body was truncated due to size limits"
-                           FontSize="11"
-                           TextColor="#FF9800"
-                           IsVisible="False"
-                           Margin="0,5,0,0" />
                 </VerticalStackLayout>
+            </CollectionView.Header>
+            <CollectionView.Footer>
+                <Label x:Name="RequestTruncatedLabel"
+                       Text="⚠️ Body was truncated due to size limits"
+                       FontSize="11"
+                       TextColor="#FF9800"
+                       IsVisible="False"
+                       Margin="0,8,0,0" />
+            </CollectionView.Footer>
+        </CollectionView>
 
-                <!-- Response Content -->
-                <VerticalStackLayout x:Name="ResponseContent" Spacing="5" IsVisible="False">
-
-                    <!-- Response Headers Section -->
+        <!-- Each tab owns one viewport; body rows are recycled by the native list. -->
+        <CollectionView x:Name="ResponseContent"
+                        Grid.Row="2"
+                        Margin="15,0,15,15"
+                        SelectionMode="None"
+                        ItemsLayout="VerticalList"
+                        ItemSizingStrategy="MeasureAllItems"
+                        VerticalOptions="Fill"
+                        VerticalScrollBarVisibility="Always"
+                        ItemTemplate="{StaticResource BodyRowTemplate}" IsVisible="False">
+            <CollectionView.Header>
+                <VerticalStackLayout Spacing="5">
                     <Grid ColumnDefinitions="*,Auto">
                         <Label Text="Headers" Style="{StaticResource SectionHeaderStyle}" />
                         <Button Grid.Column="1"
@@ -201,35 +208,26 @@
                             <RoundRectangle CornerRadius="6" />
                         </Border.StrokeShape>
                         <Label x:Name="ResponseHeadersLabel"
-                               Style="{StaticResource MonospaceStyle}" />
+                               Style="{StaticResource MonospaceStyle}"
+                               LineBreakMode="CharacterWrap" />
                     </Border>
-
-                    <!-- Response Body Section -->
-                    <Grid ColumnDefinitions="*,Auto">
+                    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
                         <Label Text="Body" Style="{StaticResource SectionHeaderStyle}" />
                         <Button Grid.Column="1"
                                 Text="Copy"
                                 Style="{StaticResource CopyButtonStyle}"
                                 Clicked="OnCopyResponseBodyClicked" />
                     </Grid>
-                    <Border Padding="10"
-                            BackgroundColor="{AppThemeBinding Light=#F8F8F8, Dark=#1E1E1E}"
-                            StrokeThickness="1"
-                            Stroke="{AppThemeBinding Light=#E0E0E0, Dark=#333333}">
-                        <Border.StrokeShape>
-                            <RoundRectangle CornerRadius="6" />
-                        </Border.StrokeShape>
-                        <Editor x:Name="ResponseBodyEditor" Style="{StaticResource CodeEditorStyle}" />
-                    </Border>
-
-                    <Label x:Name="ResponseTruncatedLabel"
-                           Text="⚠️ Body was truncated due to size limits"
-                           FontSize="11"
-                           TextColor="#FF9800"
-                           IsVisible="False"
-                           Margin="0,5,0,0" />
                 </VerticalStackLayout>
-            </Grid>
-        </ScrollView>
+            </CollectionView.Header>
+            <CollectionView.Footer>
+                <Label x:Name="ResponseTruncatedLabel"
+                       Text="⚠️ Body was truncated due to size limits"
+                       FontSize="11"
+                       TextColor="#FF9800"
+                       IsVisible="False"
+                       Margin="0,8,0,0" />
+            </CollectionView.Footer>
+        </CollectionView>
     </Grid>
 </ContentPage>

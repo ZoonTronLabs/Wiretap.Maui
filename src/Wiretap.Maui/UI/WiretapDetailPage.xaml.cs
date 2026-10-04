@@ -1,5 +1,5 @@
 using System.Text;
-using System.Text.Json;
+using System.Diagnostics;
 using CommunityToolkit.Maui.Alerts;
 using CommunityToolkit.Maui.Core;
 using Wiretap.Maui.Core;
@@ -15,7 +15,7 @@ public partial class WiretapDetailPage : ContentPage, IQueryAttributable
     private readonly IWiretapStore _store;
     private readonly WiretapOptions _options;
     private HttpRecord? _currentRecord;
-    private bool _isRequestTabActive = true;
+    private enum DetailTab { Request, Response }
 
     // Raw content for copy operations
     private string _requestHeadersRaw = string.Empty;
@@ -133,7 +133,7 @@ public partial class WiretapDetailPage : ContentPage, IQueryAttributable
         RequestHeadersLabel.Text = string.IsNullOrEmpty(_requestHeadersRaw) ? "(no headers)" : _requestHeadersRaw;
 
         _requestBodyRaw = record.RequestBody ?? string.Empty;
-        RequestBodyEditor.Text = FormatBody(record.RequestBody, record.RequestBodyTruncated);
+        RequestContent.ItemsSource = BodyTextFormatter.CreateRows(record.RequestBody, BodyFormattingMode);
         RequestTruncatedLabel.IsVisible = record.RequestBodyTruncated;
 
         // Response content
@@ -141,11 +141,11 @@ public partial class WiretapDetailPage : ContentPage, IQueryAttributable
         ResponseHeadersLabel.Text = string.IsNullOrEmpty(_responseHeadersRaw) ? "(no headers)" : _responseHeadersRaw;
 
         _responseBodyRaw = record.ResponseBody ?? string.Empty;
-        ResponseBodyEditor.Text = FormatBody(record.ResponseBody, record.ResponseBodyTruncated);
+        ResponseContent.ItemsSource = BodyTextFormatter.CreateRows(record.ResponseBody, BodyFormattingMode);
         ResponseTruncatedLabel.IsVisible = record.ResponseBodyTruncated;
 
         // Set initial tab state
-        SetActiveTab(true);
+        SetActiveTab(DetailTab.Request);
     }
 
     private static string FormatHeadersRaw(Dictionary<string, string[]> headers)
@@ -164,63 +164,9 @@ public partial class WiretapDetailPage : ContentPage, IQueryAttributable
         return sb.ToString().TrimEnd();
     }
 
-    // Reusable JSON options for pretty-printing with proper Unicode support
-    private static readonly JsonSerializerOptions PrettyPrintOptions = new()
-    {
-        WriteIndented = true,
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
-
-    private string FormatBody(string? body, bool truncated)
-    {
-        if (string.IsNullOrEmpty(body))
-            return "(no body)";
-
-        // Detect binary content (high ratio of non-printable chars)
-        if (IsBinaryContent(body))
-            return $"(binary content, {body.Length:N0} bytes)";
-
-        // Cap display size to prevent UI freeze
-        const int maxDisplayChars = 32_768;
-        var displayBody = body;
-        var displayTruncated = truncated;
-        if (body.Length > maxDisplayChars)
-        {
-            displayBody = body[..maxDisplayChars];
-            displayTruncated = true;
-        }
-
-        var result = displayBody;
-
-        // Try to pretty-print JSON
-        if (_options.PrettyPrintJson)
-        {
-            try
-            {
-                var json = JsonSerializer.Deserialize<JsonElement>(displayBody);
-                result = JsonSerializer.Serialize(json, PrettyPrintOptions);
-            }
-            catch
-            {
-                // Not JSON, use as-is
-            }
-        }
-
-        if (displayTruncated)
-        {
-            result += "\n\n... (truncated)";
-        }
-
-        return result;
-    }
-
-    private static bool IsBinaryContent(string text)
-    {
-        const int sampleSize = 512;
-        var sample = text.Length > sampleSize ? text[..sampleSize] : text;
-        var nonPrintable = sample.Count(c => char.IsControl(c) && c != '\n' && c != '\r' && c != '\t');
-        return nonPrintable > sample.Length * 0.1;
-    }
+    private BodyFormatting BodyFormattingMode => _options.PrettyPrintJson
+        ? BodyFormatting.IndentedJson
+        : BodyFormatting.Original;
 
     private static Color GetMethodColor(string method)
     {
@@ -249,53 +195,37 @@ public partial class WiretapDetailPage : ContentPage, IQueryAttributable
         };
     }
 
-    private void SetActiveTab(bool isRequestTab)
+    private void SetActiveTab(DetailTab tab)
     {
-        _isRequestTabActive = isRequestTab;
-
-        // Update button styles
-        if (isRequestTab)
+        (RequestContent.IsVisible, ResponseContent.IsVisible) = tab switch
         {
-            RequestTabButton.BackgroundColor = Application.Current?.RequestedTheme == AppTheme.Dark
-                ? Color.FromArgb("#1976D2")
-                : Color.FromArgb("#2196F3");
-            RequestTabButton.TextColor = Colors.White;
+            DetailTab.Request => (true, false),
+            DetailTab.Response => (false, true),
+            _ => throw new UnreachableException($"Unknown detail tab: {tab}")
+        };
+        UpdateTabColors(RequestTabButton, DetailTab.Request, tab);
+        UpdateTabColors(ResponseTabButton, DetailTab.Response, tab);
+    }
 
-            ResponseTabButton.BackgroundColor = Application.Current?.RequestedTheme == AppTheme.Dark
-                ? Color.FromArgb("#3D3D3D")
-                : Color.FromArgb("#E0E0E0");
-            ResponseTabButton.TextColor = Application.Current?.RequestedTheme == AppTheme.Dark
-                ? Color.FromArgb("#AAAAAA")
-                : Color.FromArgb("#666666");
-        }
-        else
-        {
-            ResponseTabButton.BackgroundColor = Application.Current?.RequestedTheme == AppTheme.Dark
-                ? Color.FromArgb("#1976D2")
-                : Color.FromArgb("#2196F3");
-            ResponseTabButton.TextColor = Colors.White;
-
-            RequestTabButton.BackgroundColor = Application.Current?.RequestedTheme == AppTheme.Dark
-                ? Color.FromArgb("#3D3D3D")
-                : Color.FromArgb("#E0E0E0");
-            RequestTabButton.TextColor = Application.Current?.RequestedTheme == AppTheme.Dark
-                ? Color.FromArgb("#AAAAAA")
-                : Color.FromArgb("#666666");
-        }
-
-        // Show/hide content
-        RequestContent.IsVisible = isRequestTab;
-        ResponseContent.IsVisible = !isRequestTab;
+    private static void UpdateTabColors(Button button, DetailTab displayedTab, DetailTab activeTab)
+    {
+        var selected = displayedTab == activeTab;
+        button.SetAppThemeColor(Button.BackgroundColorProperty,
+            Color.FromArgb(selected ? "#2196F3" : "#E0E0E0"),
+            Color.FromArgb(selected ? "#1976D2" : "#3D3D3D"));
+        button.SetAppThemeColor(Button.TextColorProperty,
+            selected ? Colors.White : Color.FromArgb("#666666"),
+            selected ? Colors.White : Color.FromArgb("#AAAAAA"));
     }
 
     private void OnRequestTabClicked(object? sender, EventArgs e)
     {
-        SetActiveTab(true);
+        SetActiveTab(DetailTab.Request);
     }
 
     private void OnResponseTabClicked(object? sender, EventArgs e)
     {
-        SetActiveTab(false);
+        SetActiveTab(DetailTab.Response);
     }
 
     private async void OnCopyRequestHeadersClicked(object? sender, EventArgs e)

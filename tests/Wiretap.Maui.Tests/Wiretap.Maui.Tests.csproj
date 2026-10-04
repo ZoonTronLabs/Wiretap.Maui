@@ -28,6 +28,7 @@
 
   <!-- Link source files directly for testing (no MAUI dependencies needed for core logic) -->
   <ItemGroup>
+    <Compile Include="..\..\src\Wiretap.Maui\UI\BodyTextFormatter.cs" Link="UI\BodyTextFormatter.cs" />
     <Compile Include="..\..\src\Wiretap.Maui\Core\HttpRecord.cs" Link="Core\HttpRecord.cs" />
     <Compile Include="..\..\src\Wiretap.Maui\Core\IWiretapStore.cs" Link="Core\IWiretapStore.cs" />
     <Compile Include="..\..\src\Wiretap.Maui\Core\WiretapStore.cs" Link="Core\WiretapStore.cs" />

@@ -18,7 +18,7 @@ In-app HTTP traffic inspector for .NET MAUI - debug network requests like [Chuck
 - 📡 **Intercept HTTP traffic** - Captures all requests/responses from your HttpClient
 - 🎯 **Simple setup** - Add the handler and choose in-memory or host-provided SQLite storage
 - 📋 **Request list** - View all captured requests with method, status, duration, size
-- 🔍 **Detail view** - Full request/response headers and bodies with tabs
+- 🔍 **Detail view** - Independently scrollable request/response tabs with virtualized body rows, including the full captured text
 - 🔎 **Search & Filter** - Filter by method (GET, POST, etc.), status code (2xx, 4xx, 5xx), or search text
 - 🎨 **JSON formatting** - Pretty-printed JSON bodies for easy reading
 - 🔒 **Sensitive data masking** - Auto-masks Authorization headers, API keys, cookies
